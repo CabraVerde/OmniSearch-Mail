@@ -80,6 +80,7 @@ export default function Home() {
   const { toast } = useToast();
   const qc = useQueryClient();
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const credFileInputRef = useRef<HTMLInputElement>(null);
 
   const [selectedAccounts, setSelectedAccounts] = useState<string[]>([]);
   const [selectedEntities, setSelectedEntities] = useState<string[]>([]);
@@ -104,6 +105,25 @@ export default function Home() {
   const [authAccountIndex, setAuthAccountIndex] = useState<number>(0);
   const [authCode, setAuthCode] = useState("");
   const [isExchanging, setIsExchanging] = useState(false);
+  const [isUploadingCred, setIsUploadingCred] = useState(false);
+  const [queryExpanded, setQueryExpanded] = useState(false);
+
+  const handleCredUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    e.target.value = "";
+    setIsUploadingCred(true);
+    try {
+      const nextIndex = (accounts as any[]).length + 1;
+      await api.uploadCredentials(file, nextIndex);
+      await qc.invalidateQueries({ queryKey: ["/api/accounts"] });
+      toast({ title: `Account ${nextIndex} credentials loaded` });
+    } catch (err: any) {
+      toast({ title: "Failed to load credentials", description: err.message, variant: "destructive" });
+    } finally {
+      setIsUploadingCred(false);
+    }
+  };
 
   const { data: accounts = [], isLoading: accountsLoading } = useQuery({
     queryKey: ["/api/accounts"],
@@ -402,9 +422,22 @@ export default function Home() {
                 <h3 className="text-sm font-medium flex items-center gap-2">
                   <Mail className="h-4 w-4 text-muted-foreground" /> Gmail Accounts
                 </h3>
-                <Badge variant="secondary" className="text-xs">
-                  {selectedAccounts.length}/{authorizedAccounts.length} selected
-                </Badge>
+                <div className="flex items-center gap-1">
+                  <Badge variant="secondary" className="text-xs">
+                    {selectedAccounts.length}/{authorizedAccounts.length} selected
+                  </Badge>
+                  <Button
+                    variant="ghost"
+                    size="icon"
+                    className="h-6 w-6"
+                    title="Upload credentials JSON"
+                    onClick={() => credFileInputRef.current?.click()}
+                    disabled={isUploadingCred}
+                  >
+                    {isUploadingCred ? <Loader2 className="h-3 w-3 animate-spin" /> : <Plus className="h-3 w-3" />}
+                  </Button>
+                  <input ref={credFileInputRef} type="file" accept=".json,application/json" className="hidden" onChange={handleCredUpload} />
+                </div>
               </div>
               <div className="space-y-2">
                 {accountsLoading ? (
@@ -412,9 +445,19 @@ export default function Home() {
                     <Loader2 className="h-4 w-4 animate-spin text-muted-foreground" />
                   </div>
                 ) : accounts.length === 0 ? (
-                  <p className="text-xs text-muted-foreground text-center py-2">
-                    No credentials configured. Add GMAIL_CREDENTIALS_* secrets.
-                  </p>
+                  <div className="text-center py-3 space-y-2">
+                    <p className="text-xs text-muted-foreground">No accounts loaded.</p>
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      className="h-7 text-xs gap-1.5"
+                      onClick={() => credFileInputRef.current?.click()}
+                      disabled={isUploadingCred}
+                    >
+                      {isUploadingCred ? <Loader2 className="h-3 w-3 animate-spin" /> : <Upload className="h-3 w-3" />}
+                      Upload credentials JSON
+                    </Button>
+                  </div>
                 ) : (
                   accounts.map((acc: any) => (
                     <div key={acc.id} className="flex items-start space-x-2 bg-muted/30 p-2.5 rounded-md border border-transparent hover:border-border transition-colors">
@@ -600,40 +643,59 @@ export default function Home() {
       </div>
 
       {/* MAIN CONTENT */}
-      <div className="flex-1 flex flex-col bg-muted/10">
-        <header className="h-auto min-h-16 border-b bg-card flex items-center justify-between px-6 py-3 shadow-sm z-10 gap-4">
-          <div className="flex-1 min-w-0">
-            <h1 className="text-lg font-semibold">Search Results</h1>
-            {previewQuery && (
-              <div className="mt-1 bg-muted/50 rounded-md px-3 py-1.5">
-                <p className="text-[10px] uppercase tracking-wider text-muted-foreground mb-0.5">Gmail Query</p>
-                <code className="text-xs text-foreground/80 break-all font-mono">{previewQuery}</code>
-              </div>
-            )}
-            <p className="text-sm text-muted-foreground mt-1">
-              {searchResults
-                ? `Found ${searchResults.length} messages — ${selectedMsgCount} selected (PDF + JSON per email${selectedAttCount > 0 ? `, ${selectedAttCount} attachments` : ''})`
-                : "Configure your search on the left and hit run"}
-            </p>
-          </div>
-
-          {searchResults && searchResults.length > 0 && (
-            <Button
-              disabled={selectedMsgCount === 0 || isBundling}
-              className="gap-2 shrink-0"
-              onClick={handleBundleDownload}
-              data-testid="button-save-bundle"
-            >
-              {isBundling ? (
-                <><Loader2 className="h-4 w-4 animate-spin" /> Bundling...</>
-              ) : (
-                <><Archive className="h-4 w-4" /> Save as ZIP</>
+      <div className="flex-1 flex flex-col bg-muted/10 min-h-0">
+        <header className="shrink-0 border-b bg-card shadow-sm z-10">
+          {/* Top bar — always visible, fixed height */}
+          <div className="flex items-center justify-between px-6 py-3 gap-4">
+            <div className="flex items-center gap-3 min-w-0">
+              <h1 className="text-lg font-semibold shrink-0">Search Results</h1>
+              <p className="text-sm text-muted-foreground truncate">
+                {searchResults
+                  ? `Found ${searchResults.length} messages — ${selectedMsgCount} selected (PDF + JSON per email${selectedAttCount > 0 ? `, ${selectedAttCount} attachments` : ''})`
+                  : "Configure your search on the left and hit run"}
+              </p>
+            </div>
+            <div className="flex items-center gap-2 shrink-0">
+              {previewQuery && (
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  className="h-7 text-xs gap-1 text-muted-foreground"
+                  onClick={() => setQueryExpanded(v => !v)}
+                >
+                  <ChevronDown className={`h-3 w-3 transition-transform ${queryExpanded ? 'rotate-180' : ''}`} />
+                  {queryExpanded ? 'Hide query' : 'Show query'}
+                </Button>
               )}
-            </Button>
+              {searchResults && searchResults.length > 0 && (
+                <Button
+                  disabled={selectedMsgCount === 0 || isBundling}
+                  className="gap-2"
+                  onClick={handleBundleDownload}
+                  data-testid="button-save-bundle"
+                >
+                  {isBundling ? (
+                    <><Loader2 className="h-4 w-4 animate-spin" /> Bundling...</>
+                  ) : (
+                    <><Archive className="h-4 w-4" /> Save as ZIP</>
+                  )}
+                </Button>
+              )}
+            </div>
+          </div>
+          {/* Collapsible resizable query box */}
+          {previewQuery && queryExpanded && (
+            <div className="px-6 pb-3">
+              <textarea
+                readOnly
+                value={previewQuery}
+                className="w-full text-xs font-mono bg-muted/50 rounded-md px-3 py-2 text-foreground/70 resize-y min-h-[48px] max-h-[300px] h-[80px] border border-border/50 outline-none"
+              />
+            </div>
           )}
         </header>
 
-        <ScrollArea className="flex-1 p-6">
+        <ScrollArea className="flex-1 min-h-0 p-6">
           <div className="max-w-4xl mx-auto space-y-4">
 
             {!searchResults ? (

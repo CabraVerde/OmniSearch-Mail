@@ -31,6 +31,18 @@ export const api = {
     return res.json();
   },
 
+  uploadCredentials: async (file: File, accountIndex: number) => {
+    const formData = new FormData();
+    formData.append("file", file);
+    formData.append("accountIndex", String(accountIndex));
+    const res = await fetch("/api/credentials/upload", { method: "POST", body: formData });
+    if (!res.ok) {
+      const body = await res.json().catch(() => ({ error: res.statusText }));
+      throw new Error(body.error || res.statusText);
+    }
+    return res.json();
+  },
+
   previewQuery: (data: any) =>
     apiFetch("/api/query/preview", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(data) }),
 

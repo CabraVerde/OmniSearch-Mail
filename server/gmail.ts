@@ -8,6 +8,13 @@ interface CredentialSet {
 }
 
 function parseCredentials(envKey: string): { clientId: string; clientSecret: string } | null {
+  // Check in-memory store first (populated by file upload)
+  const match = envKey.match(/_(\d+)$/);
+  if (match) {
+    const stored = credentialStore[`creds_${match[1]}`];
+    if (stored) return { clientId: stored.clientId, clientSecret: stored.clientSecret };
+  }
+  // Fall back to environment variable
   const raw = process.env[envKey];
   if (!raw) return null;
   try {
@@ -20,6 +27,13 @@ function parseCredentials(envKey: string): { clientId: string; clientSecret: str
 }
 
 function getRedirectUri(accountIndex: number): string {
+  // Check in-memory store first
+  const stored = credentialStore[`creds_${accountIndex}`];
+  if (stored) {
+    const uri = stored.redirectUris.find(u => u !== 'urn:ietf:wg:oauth:2.0:oob');
+    if (uri) return uri;
+  }
+  // Fall back to env var
   const raw = process.env[`GMAIL_CREDENTIALS_${accountIndex}`];
   if (raw) {
     try {
@@ -40,6 +54,18 @@ const SCOPES = [
 ];
 
 const tokenStore: Record<string, string> = {};
+
+// In-memory credential store — populated by file upload, cleared on restart.
+const credentialStore: Record<string, { clientId: string; clientSecret: string; redirectUris: string[] }> = {};
+
+export function setInMemoryCredentials(
+  accountIndex: number,
+  clientId: string,
+  clientSecret: string,
+  redirectUris: string[]
+) {
+  credentialStore[`creds_${accountIndex}`] = { clientId, clientSecret, redirectUris };
+}
 
 export function getAccountCredentials(accountIndex: number): CredentialSet | null {
   const creds = parseCredentials(`GMAIL_CREDENTIALS_${accountIndex}`);

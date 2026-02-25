@@ -1,17 +1,9 @@
-import { drizzle } from "drizzle-orm/node-postgres";
-import { eq } from "drizzle-orm";
+import { randomUUID } from "crypto";
 import {
-  gmailAccounts, entities, emailMappings,
   type GmailAccount, type InsertGmailAccount,
   type Entity, type InsertEntity,
   type EmailMapping, type InsertEmailMapping,
 } from "@shared/schema";
-
-if (!process.env.DATABASE_URL) {
-  throw new Error("DATABASE_URL is required");
-}
-
-export const db = drizzle(process.env.DATABASE_URL);
 
 export interface IStorage {
   getAccounts(): Promise<GmailAccount[]>;
@@ -30,63 +22,73 @@ export interface IStorage {
   bulkImportEntities(data: { name: string; patterns: string[] }[]): Promise<void>;
 }
 
-export class DatabaseStorage implements IStorage {
+// All entity/mapping data is held only in process memory.
+// It is cleared on every server restart — nothing is written to disk or a database.
+export class InMemoryStorage implements IStorage {
+  private accounts: Map<string, GmailAccount> = new Map();
+  private entities: Map<string, Entity> = new Map();
+  private mappings: Map<string, EmailMapping> = new Map();
+
   async getAccounts(): Promise<GmailAccount[]> {
-    return db.select().from(gmailAccounts);
+    return Array.from(this.accounts.values());
   }
 
   async createAccount(account: InsertGmailAccount): Promise<GmailAccount> {
-    const [result] = await db.insert(gmailAccounts).values(account).returning();
-    return result;
+    const record: GmailAccount = { id: randomUUID(), source: "manual", ...account };
+    this.accounts.set(record.id, record);
+    return record;
   }
 
   async deleteAccount(id: string): Promise<void> {
-    await db.delete(gmailAccounts).where(eq(gmailAccounts.id, id));
+    this.accounts.delete(id);
   }
 
   async getEntities(): Promise<Entity[]> {
-    return db.select().from(entities);
+    return Array.from(this.entities.values());
   }
 
   async createEntity(entity: InsertEntity): Promise<Entity> {
-    const [result] = await db.insert(entities).values(entity).returning();
-    return result;
+    const record: Entity = { id: randomUUID(), ...entity };
+    this.entities.set(record.id, record);
+    return record;
   }
 
   async deleteEntity(id: string): Promise<void> {
-    await db.delete(entities).where(eq(entities.id, id));
+    this.entities.delete(id);
+    for (const [mid, m] of Array.from(this.mappings.entries())) {
+      if (m.entityId === id) this.mappings.delete(mid);
+    }
   }
 
   async getMappings(entityId?: string): Promise<EmailMapping[]> {
-    if (entityId) {
-      return db.select().from(emailMappings).where(eq(emailMappings.entityId, entityId));
-    }
-    return db.select().from(emailMappings);
+    const all = Array.from(this.mappings.values());
+    return entityId ? all.filter(m => m.entityId === entityId) : all;
   }
 
   async createMapping(mapping: InsertEmailMapping): Promise<EmailMapping> {
-    const [result] = await db.insert(emailMappings).values(mapping).returning();
-    return result;
+    const record: EmailMapping = { id: randomUUID(), ...mapping };
+    this.mappings.set(record.id, record);
+    return record;
   }
 
   async deleteMapping(id: string): Promise<void> {
-    await db.delete(emailMappings).where(eq(emailMappings.id, id));
+    this.mappings.delete(id);
   }
 
   async deleteMappingsByEntity(entityId: string): Promise<void> {
-    await db.delete(emailMappings).where(eq(emailMappings.entityId, entityId));
+    for (const [id, m] of Array.from(this.mappings.entries())) {
+      if (m.entityId === entityId) this.mappings.delete(id);
+    }
   }
 
   async bulkImportEntities(data: { name: string; patterns: string[] }[]): Promise<void> {
     for (const item of data) {
-      const [entity] = await db.insert(entities).values({ name: item.name }).returning();
-      if (item.patterns.length > 0) {
-        await db.insert(emailMappings).values(
-          item.patterns.map(p => ({ entityId: entity.id, pattern: p }))
-        );
+      const entity = await this.createEntity({ name: item.name });
+      for (const pattern of item.patterns) {
+        await this.createMapping({ entityId: entity.id, pattern });
       }
     }
   }
 }
 
-export const storage = new DatabaseStorage();
+export const storage = new InMemoryStorage();

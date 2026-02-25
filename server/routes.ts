@@ -5,7 +5,8 @@ import { insertEntitySchema, insertEmailMappingSchema } from "@shared/schema";
 import {
   buildGmailQuery, searchMessages, downloadAttachment,
   getAccountEmail, getConfiguredAccountCount, getAccountCredentials,
-  getAuthUrl, handleAuthCallback, hasRefreshToken, setRefreshToken
+  getAuthUrl, handleAuthCallback, hasRefreshToken, setRefreshToken,
+  setInMemoryCredentials
 } from "./gmail";
 import { z } from "zod";
 import * as XLSX from "xlsx";
@@ -48,6 +49,32 @@ export async function registerRoutes(
     res.json(accounts);
   });
 
+  // --- Credential File Upload ---
+  app.post("/api/credentials/upload", upload.single("file"), (req, res) => {
+    try {
+      const file = req.file;
+      if (!file) return res.status(400).json({ error: "No file uploaded" });
+      const accountIndex = parseInt(req.body.accountIndex);
+      if (!accountIndex || accountIndex < 1 || accountIndex > 10) {
+        return res.status(400).json({ error: "Invalid accountIndex" });
+      }
+      const json = JSON.parse(file.buffer.toString("utf-8"));
+      const inner = json.installed || json.web || json;
+      if (!inner.client_id || !inner.client_secret) {
+        return res.status(400).json({ error: "Invalid credentials JSON — missing client_id or client_secret" });
+      }
+      setInMemoryCredentials(
+        accountIndex,
+        inner.client_id,
+        inner.client_secret,
+        inner.redirect_uris || []
+      );
+      res.json({ success: true, accountIndex });
+    } catch (err: any) {
+      res.status(400).json({ error: `Could not parse credentials file: ${err.message}` });
+    }
+  });
+
   // --- OAuth Authorization Flow ---
   app.get("/api/auth/authorize/:accountIndex", (req, res) => {
     const accountIndex = parseInt(req.params.accountIndex);
@@ -65,8 +92,8 @@ export async function registerRoutes(
     }
 
     try {
-      const refreshToken = await handleAuthCallback(code, parseInt(accountIndex));
-      res.json({ success: true, refreshToken });
+      await handleAuthCallback(code, parseInt(accountIndex));
+      res.json({ success: true });
     } catch (err: any) {
       res.status(500).json({ error: err.message });
     }
@@ -295,7 +322,7 @@ export async function registerRoutes(
   app.get("/api/attachments/:accountIndex/:messageId/:attachmentId", async (req, res) => {
     try {
       const { accountIndex, messageId, attachmentId } = req.params;
-      const filename = req.query.filename as string || "attachment";
+      const filename = (req.query.filename as string || "attachment").replace(/[\r\n]/g, '');
       const buffer = await downloadAttachment(messageId, attachmentId, parseInt(accountIndex));
       res.setHeader("Content-Disposition", `attachment; filename="${filename}"`);
       res.setHeader("Content-Type", "application/octet-stream");

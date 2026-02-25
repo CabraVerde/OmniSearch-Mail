@@ -49,7 +49,11 @@ app.use((req, res, next) => {
     const duration = Date.now() - start;
     if (path.startsWith("/api")) {
       let logLine = `${req.method} ${path} ${res.statusCode} in ${duration}ms`;
-      if (capturedJsonResponse) {
+      // Skip logging response bodies for routes that return email content or binary data
+      const suppressBody = path.startsWith("/api/query/run") ||
+        path.startsWith("/api/attachments") ||
+        path.startsWith("/api/download");
+      if (capturedJsonResponse && !suppressBody) {
         logLine += ` :: ${JSON.stringify(capturedJsonResponse)}`;
       }
 
