@@ -374,19 +374,19 @@ export async function registerRoutes(
 
       const fileCounters: Record<string, number> = {};
 
+      function dedupeKey(key: string, base: string): string {
+        if (fileCounters[key] !== undefined) {
+          fileCounters[key]++;
+          return `${base}_${fileCounters[key]}`;
+        }
+        fileCounters[key] = 0;
+        return base;
+      }
+
       for (const item of items) {
         const entityFolder = sanitizeFolderName(item.entityName || "Unknown");
         const datePrefix = formatDatePrefix(item.date);
-        const subjectSlug = sanitizeFolderName(item.subject || "No_Subject").substring(0, 50);
-        let baseFilename = `${datePrefix}_${subjectSlug}`;
-
-        const fileKey = `${entityFolder}/${baseFilename}`;
-        if (fileCounters[fileKey] !== undefined) {
-          fileCounters[fileKey]++;
-          baseFilename = `${baseFilename}_${fileCounters[fileKey]}`;
-        } else {
-          fileCounters[fileKey] = 0;
-        }
+        const subjectSlug = sanitizeFolderName(item.subject || "No_Subject").substring(0, 30);
 
         const downloadedAttachments: DownloadedAttachment[] = [];
 
@@ -413,16 +413,33 @@ export async function registerRoutes(
           }
         }
 
-        const combinedPdf = await generateCombinedPdf(item, downloadedAttachments);
-        archive.append(combinedPdf, { name: `${entityFolder}/${baseFilename}_combined.pdf` });
+        if (downloadedAttachments.length === 0) {
+          // No attachments — emit body-only COMBINED pair
+          const base = `${datePrefix}_${subjectSlug}`;
+          const deduped = dedupeKey(`${entityFolder}/${base}`, base);
+          const combinedPdf = await generateCombinedPdf(item, undefined, []);
+          archive.append(combinedPdf, { name: `${entityFolder}/${deduped}_COMBINED.pdf` });
+          const jsonRecord = generateJsonRecord(item, [], undefined);
+          archive.append(JSON.stringify(jsonRecord, null, 2), { name: `${entityFolder}/${deduped}_COMBINED.json` });
+        } else {
+          // One raw file + one COMBINED pair per attachment
+          for (const att of downloadedAttachments) {
+            const attSlug = sanitizeFolderName(att.filename.replace(/\.[^.]+$/, '')).substring(0, 30);
+            const attExt = att.filename.includes('.') ? '.' + att.filename.split('.').pop() : '';
+            const attBase = `${datePrefix}_${subjectSlug}_${attSlug}`;
+            const deduped = dedupeKey(`${entityFolder}/${attBase}`, attBase);
 
-        const jsonRecord = generateJsonRecord(item, downloadedAttachments);
-        archive.append(JSON.stringify(jsonRecord, null, 2), { name: `${entityFolder}/${baseFilename}_combined.json` });
+            // Raw attachment (original file, properly named)
+            archive.append(att.buffer, { name: `${entityFolder}/${deduped}${attExt}` });
 
-        for (const att of downloadedAttachments) {
-          const attSlug = sanitizeFolderName(att.filename.replace(/\.[^.]+$/, '')).substring(0, 60);
-          const attExt = att.filename.includes('.') ? '.' + att.filename.split('.').pop() : '';
-          archive.append(att.buffer, { name: `${entityFolder}/${datePrefix}_${attSlug}${attExt}` });
+            // COMBINED PDF: metadata (all attachments listed, this one highlighted) + body + preview
+            const combinedPdf = await generateCombinedPdf(item, att, downloadedAttachments);
+            archive.append(combinedPdf, { name: `${entityFolder}/${deduped}_COMBINED.pdf` });
+
+            // COMBINED JSON: full email context + link to the raw file
+            const jsonRecord = generateJsonRecord(item, downloadedAttachments, `${deduped}${attExt}`);
+            archive.append(JSON.stringify(jsonRecord, null, 2), { name: `${entityFolder}/${deduped}_COMBINED.json` });
+          }
         }
       }
 
@@ -508,7 +525,8 @@ function generateBasePdf(
     bodyText: string;
     bodyHtml: string;
   },
-  attachments: DownloadedAttachment[]
+  allAttachments: DownloadedAttachment[],
+  previewAttachment?: DownloadedAttachment
 ): Promise<Buffer> {
   return new Promise((resolve, reject) => {
     const doc = new PDFDocument({ size: 'A4', margin: 50 });
@@ -538,13 +556,22 @@ function generateBasePdf(
       }
     }
 
-    if (attachments.length > 0) {
+    if (allAttachments.length > 0) {
       doc.moveDown(0.3);
       doc.fontSize(9).font('Helvetica-Bold').text('Attachments:');
       doc.moveDown(0.2);
-      for (const att of attachments) {
-        const badge = att.isImage ? '[image preview below]' : att.isPdf ? '[PDF preview below]' : '[separate file]';
-        doc.fontSize(8).font('Helvetica').text(`  • ${att.filename} (${formatBytes(att.size)}) ${badge}`);
+      for (const att of allAttachments) {
+        const isHighlighted = previewAttachment && att.filename === previewAttachment.filename;
+        let badge: string;
+        if (isHighlighted) {
+          badge = att.isImage ? '→ [this file — image preview below]'
+                : att.isPdf  ? '→ [this file — PDF preview below]'
+                :               '→ [this file]';
+        } else {
+          badge = att.isImage || att.isPdf ? '[separate file]' : '[separate file]';
+        }
+        doc.fontSize(8).font(isHighlighted ? 'Helvetica-Bold' : 'Helvetica')
+          .text(`  • ${att.filename} (${formatBytes(att.size)}) ${badge}`);
         doc.moveDown(0.1);
       }
     }
@@ -561,23 +588,19 @@ function generateBasePdf(
       lineGap: 2,
     });
 
-    const imageAttachments = attachments.filter(a => a.isImage);
-    for (const img of imageAttachments) {
+    if (previewAttachment?.isImage) {
       try {
         doc.addPage();
-        doc.fontSize(10).font('Helvetica-Bold').text(`Attachment Preview: ${img.filename}`, { align: 'center' });
+        doc.fontSize(10).font('Helvetica-Bold').text(`Attachment Preview: ${previewAttachment.filename}`, { align: 'center' });
         doc.moveDown(0.5);
-
-        const maxWidth = 495;
-        const maxHeight = 700;
-        doc.image(img.buffer, {
-          fit: [maxWidth, maxHeight],
+        doc.image(previewAttachment.buffer, {
+          fit: [495, 700],
           align: 'center',
           valign: 'center',
         });
       } catch (imgErr) {
         doc.fontSize(9).font('Helvetica').fillColor('#999')
-          .text(`[Could not embed image: ${img.filename}]`);
+          .text(`[Could not embed image: ${previewAttachment.filename}]`);
         doc.fillColor('#000');
       }
     }
@@ -603,52 +626,50 @@ async function generateCombinedPdf(
     bodyText: string;
     bodyHtml: string;
   },
-  attachments: DownloadedAttachment[]
+  previewAttachment: DownloadedAttachment | undefined,
+  allAttachments: DownloadedAttachment[]
 ): Promise<Buffer> {
-  const baseBuffer = await generateBasePdf(item, attachments);
+  const baseBuffer = await generateBasePdf(item, allAttachments, previewAttachment);
 
-  const pdfAttachments = attachments.filter(a => a.isPdf);
-  if (pdfAttachments.length === 0) {
+  if (!previewAttachment?.isPdf) {
     return baseBuffer;
   }
 
   try {
     const combinedDoc = await PDFLibDocument.load(baseBuffer);
 
-    for (const att of pdfAttachments) {
-      try {
-        const srcDoc = await PDFLibDocument.load(att.buffer, { ignoreEncryption: true });
-        const totalPages = srcDoc.getPageCount();
-        const [firstPage] = await combinedDoc.copyPages(srcDoc, [0]);
+    try {
+      const srcDoc = await PDFLibDocument.load(previewAttachment.buffer, { ignoreEncryption: true });
+      const totalPages = srcDoc.getPageCount();
+      const [firstPage] = await combinedDoc.copyPages(srcDoc, [0]);
 
-        combinedDoc.addPage(firstPage);
+      combinedDoc.addPage(firstPage);
 
-        const lastPage = combinedDoc.getPage(combinedDoc.getPageCount() - 1);
-        const { width } = lastPage.getSize();
+      const lastPage = combinedDoc.getPage(combinedDoc.getPageCount() - 1);
+      const { width } = lastPage.getSize();
 
-        const captionText = `Preview: ${att.filename} (page 1 of ${totalPages})`;
-        lastPage.drawRectangle({
-          x: 0,
-          y: 0,
-          width: width,
-          height: 20,
-          color: rgb(0.95, 0.95, 0.95),
-        });
-        lastPage.drawText(captionText, {
-          x: 10,
-          y: 5,
-          size: 8,
-          color: rgb(0.4, 0.4, 0.4),
-        });
-      } catch (pdfErr) {
-        console.error(`Failed to embed PDF preview for ${att.filename}:`, pdfErr);
-      }
+      const captionText = `Preview: ${previewAttachment.filename} (page 1 of ${totalPages})`;
+      lastPage.drawRectangle({
+        x: 0,
+        y: 0,
+        width: width,
+        height: 20,
+        color: rgb(0.95, 0.95, 0.95),
+      });
+      lastPage.drawText(captionText, {
+        x: 10,
+        y: 5,
+        size: 8,
+        color: rgb(0.4, 0.4, 0.4),
+      });
+    } catch (pdfErr) {
+      console.error(`Failed to embed PDF preview for ${previewAttachment.filename}:`, pdfErr);
     }
 
     const finalBytes = await combinedDoc.save();
     return Buffer.from(finalBytes);
   } catch (err) {
-    console.error('Failed to merge PDF attachments, returning base PDF:', err);
+    console.error('Failed to merge PDF attachment, returning base PDF:', err);
     return baseBuffer;
   }
 }
@@ -665,7 +686,8 @@ function generateJsonRecord(
     bodyText: string;
     bodyHtml: string;
   },
-  attachments: DownloadedAttachment[]
+  allAttachments: DownloadedAttachment[],
+  linkedAttachmentFile?: string
 ) {
   let dateISO = '';
   try {
@@ -682,11 +704,16 @@ function generateJsonRecord(
     dateISO,
     entity: item.entityName || 'Unknown',
     bodyText: item.bodyText || stripHtmlTags(item.bodyHtml) || '',
-    attachments: attachments.map(a => ({
+    ...(linkedAttachmentFile ? { linkedAttachmentFile } : {}),
+    attachments: allAttachments.map(a => ({
       filename: a.filename,
       mimeType: a.mimeType,
       size: a.size,
-      previewInCombinedPdf: a.isImage || a.isPdf,
+      previewInCombinedPdf: (linkedAttachmentFile
+        ? a.filename === allAttachments.find(x => linkedAttachmentFile.startsWith(
+            sanitizeFolderName(x.filename.replace(/\.[^.]+$/, '')).substring(0, 30)
+          ))?.filename
+        : a.isImage || a.isPdf) ?? false,
     })),
   };
 }
