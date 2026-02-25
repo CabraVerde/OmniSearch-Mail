@@ -1,0 +1,17 @@
+{
+  "user1@thegbexchange.com": [
+    "user1@thegbexchange.com"
+  ],
+  "user2@thegbexchange.com": [
+    "user2@thegbexchange.com",
+    "accounts@thegbexchange.com"
+  ],
+  "user3@thegbexchange.com": [
+    "user3@thegbexchange.com",
+    "accounts@thegbexchange.com"
+  ],
+  "admin1@thegbexchange.com": [
+    "admin1@thegbexchange.com",
+    "accounts@thegbexchange.com"
+  ]
+}

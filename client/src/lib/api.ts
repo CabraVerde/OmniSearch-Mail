@@ -8,12 +8,24 @@ async function apiFetch(url: string, options?: RequestInit) {
 }
 
 export const api = {
+  // ── Auth ──────────────────────────────────────────────────────────────────
+  getMe: () => apiFetch("/api/auth/me"),
+  signInWithGoogle: (credential: string) =>
+    apiFetch("/api/auth/google", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ credential }),
+    }),
+  logout: () => apiFetch("/api/auth/logout", { method: "POST" }),
+
+  // ── Accounts ──────────────────────────────────────────────────────────────
   getAccounts: () => apiFetch("/api/accounts"),
   getAuthUrl: (accountIndex: number) => apiFetch(`/api/auth/authorize/${accountIndex}`),
   exchangeCode: (code: string, accountIndex: number) =>
     apiFetch("/api/auth/exchange-code", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ code, accountIndex }) }),
   getAuthStatus: () => apiFetch("/api/auth/status"),
 
+  // ── Entities ──────────────────────────────────────────────────────────────
   getEntities: () => apiFetch("/api/entities"),
   createEntity: (data: { name: string; patterns?: string[] }) =>
     apiFetch("/api/entities", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(data) }),

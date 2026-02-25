@@ -14,6 +14,15 @@ import multer from "multer";
 import archiver from "archiver";
 import PDFDocument from "pdfkit";
 import { PDFDocument as PDFLibDocument, rgb } from "pdf-lib";
+import { requireAuth, verifyGoogleIdToken, getSessionUser } from "./middleware/auth";
+import { requireAdmin, isAdminUser } from "./middleware/adminGuard";
+import {
+  requireMailboxAccess,
+  canAccessMailbox,
+  getMailboxEmailForAccount,
+} from "./middleware/mailboxGuard";
+import fs from "fs";
+import path from "path";
 
 const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 10 * 1024 * 1024 } });
 
@@ -22,35 +31,130 @@ export async function registerRoutes(
   app: Express
 ): Promise<Server> {
 
-  // --- Gmail Account Discovery ---
-  app.get("/api/accounts", async (_req, res) => {
+  // ── Google Workspace Sign-In ───────────────────────────────────────────────
+  //
+  // POST /api/auth/google
+  // Body: { credential: "<Google ID token from GIS>" }
+  //
+  // Verifies the ID token server-side, enforces @thegbexchange.com domain,
+  // then stores minimal user info in the session.
+  // Tokens are NEVER stored or logged beyond this handler.
+  app.post("/api/auth/google", async (req, res) => {
+    const { credential } = req.body as { credential?: string };
+    if (!credential) {
+      return res.status(400).json({ error: "credential is required" });
+    }
+    try {
+      const { email, name } = await verifyGoogleIdToken(credential);
+
+      const adminEmails = (process.env.ADMIN_EMAILS || "")
+        .split(",").map(e => e.trim().toLowerCase()).filter(Boolean);
+
+      // Regenerate session ID on login to prevent session-fixation attacks.
+      req.session.regenerate((err) => {
+        if (err) return res.status(500).json({ error: "Session error" });
+        req.session.user = {
+          email,
+          name,
+          isAdmin: adminEmails.includes(email),
+        };
+        req.session.save((saveErr) => {
+          if (saveErr) return res.status(500).json({ error: "Session save error" });
+          res.json({ email, name, isAdmin: req.session.user!.isAdmin });
+        });
+      });
+    } catch (err: any) {
+      // Do NOT include the raw error (may contain token details) in the response.
+      res.status(401).json({ error: "Authentication failed – invalid or rejected credential" });
+    }
+  });
+
+  // GET /api/auth/me — Returns the current session user, or 401 if not logged in.
+  app.get("/api/auth/me", (req, res) => {
+    const user = getSessionUser(req);
+    if (!user) return res.status(401).json({ error: "Not authenticated" });
+    res.json(user);
+  });
+
+  // POST /api/auth/logout — Destroys the session.
+  app.post("/api/auth/logout", (req, res) => {
+    req.session.destroy(() => {
+      res.clearCookie("connect.sid");
+      res.json({ ok: true });
+    });
+  });
+
+  // ── Admin routes (/admin/*) ───────────────────────────────────────────────
+  //
+  // ALL /admin/* routes require:
+  //   1. Valid session
+  //   2. Email in ADMIN_EMAILS
+  //   3. Request IP in ADMIN_ALLOWED_IPS (VPN enforcement)
+  //
+  // Normal users are NEVER shown admin UI, but the server-side guard is the
+  // authoritative check — do not rely on UI-hiding alone.
+
+  // GET /admin/audit — Returns last N lines of the audit log.
+  app.get("/admin/audit", requireAdmin, (req, res) => {
+    const logPath = path.resolve(process.env.AUDIT_LOG_PATH || "audit.log");
+    const limit = Math.min(parseInt(req.query.limit as string || "200", 10), 1000);
+    try {
+      if (!fs.existsSync(logPath)) {
+        return res.json({ lines: [], message: "Audit log not yet created" });
+      }
+      const lines = fs.readFileSync(logPath, "utf8")
+        .split("\n")
+        .filter(Boolean)
+        .slice(-limit)
+        .map(l => {
+          try { return JSON.parse(l); } catch { return { raw: l }; }
+        });
+      res.json({ lines });
+    } catch (err: any) {
+      res.status(500).json({ error: "Could not read audit log" });
+    }
+  });
+
+  // GET /admin/accounts — Full account status (admin only).
+  app.get("/admin/accounts", requireAdmin, async (_req, res) => {
     const count = getConfiguredAccountCount();
     const accounts = [];
     for (let i = 1; i <= count; i++) {
       const creds = getAccountCredentials(i);
       const authorized = hasRefreshToken(i);
-      let email = 'Not authorized yet';
-      if (authorized) {
-        try {
-          email = await getAccountEmail(i);
-        } catch {
-          email = 'Error fetching email';
-        }
+      let email = getMailboxEmailForAccount(i) || 'Not configured';
+      if (authorized && !email) {
+        try { email = await getAccountEmail(i); } catch { email = 'Error'; }
       }
-      accounts.push({
-        id: String(i),
-        index: i,
-        label: `Account ${i}`,
-        email,
-        authorized,
-        hasCredentials: !!creds,
-      });
+      accounts.push({ id: String(i), index: i, email, authorized, hasCredentials: !!creds });
     }
     res.json(accounts);
   });
 
-  // --- Credential File Upload ---
-  app.post("/api/credentials/upload", upload.single("file"), (req, res) => {
+  // ── Gmail Account Discovery (user-facing) ─────────────────────────────────
+  // Returns only accounts the logged-in user is authorized to access.
+  // Admins see all accounts.
+  app.get("/api/accounts", requireAuth, async (req, res) => {
+    const user = getSessionUser(req)!;
+    const count = getConfiguredAccountCount();
+    const accounts = [];
+    for (let i = 1; i <= count; i++) {
+      const mailboxEmail = getMailboxEmailForAccount(i);
+      // Skip accounts this user cannot access
+      if (mailboxEmail && !canAccessMailbox(user.email, mailboxEmail)) continue;
+      const creds = getAccountCredentials(i);
+      const authorized = hasRefreshToken(i);
+      const email = mailboxEmail || (authorized
+        ? await getAccountEmail(i).catch(() => 'Error')
+        : 'Not authorized yet');
+      accounts.push({ id: String(i), index: i, label: `Account ${i}`, email, authorized, hasCredentials: !!creds });
+    }
+    res.json(accounts);
+  });
+
+  // ── Credential File Upload ─────────────────────────────────────────────────
+  // Admin-only: only admins can upload OAuth client credentials.
+  app.post("/api/credentials/upload", requireAdmin, upload.single("file"), (req, res) => {
     try {
       const file = req.file;
       if (!file) return res.status(400).json({ error: "No file uploaded" });
@@ -63,20 +167,16 @@ export async function registerRoutes(
       if (!inner.client_id || !inner.client_secret) {
         return res.status(400).json({ error: "Invalid credentials JSON — missing client_id or client_secret" });
       }
-      setInMemoryCredentials(
-        accountIndex,
-        inner.client_id,
-        inner.client_secret,
-        inner.redirect_uris || []
-      );
+      setInMemoryCredentials(accountIndex, inner.client_id, inner.client_secret, inner.redirect_uris || []);
       res.json({ success: true, accountIndex });
     } catch (err: any) {
       res.status(400).json({ error: `Could not parse credentials file: ${err.message}` });
     }
   });
 
-  // --- OAuth Authorization Flow ---
-  app.get("/api/auth/authorize/:accountIndex", (req, res) => {
+  // ── OAuth Authorization Flow ───────────────────────────────────────────────
+  // Admin-only: account OAuth setup is a one-time admin operation.
+  app.get("/api/auth/authorize/:accountIndex", requireAdmin, (req, res) => {
     const accountIndex = parseInt(req.params.accountIndex);
     const url = getAuthUrl(accountIndex);
     if (!url) {
@@ -85,7 +185,7 @@ export async function registerRoutes(
     res.json({ url });
   });
 
-  app.post("/api/auth/exchange-code", async (req, res) => {
+  app.post("/api/auth/exchange-code", requireAdmin, async (req, res) => {
     const { code, accountIndex } = req.body;
     if (!code || !accountIndex) {
       return res.status(400).json({ error: "Missing code or accountIndex" });
@@ -99,7 +199,8 @@ export async function registerRoutes(
     }
   });
 
-  app.get("/api/auth/status", (_req, res) => {
+  // Admin-only: raw account auth status
+  app.get("/api/auth/status", requireAdmin, (_req, res) => {
     const count = getConfiguredAccountCount();
     const statuses = [];
     for (let i = 1; i <= count; i++) {
@@ -112,8 +213,8 @@ export async function registerRoutes(
     res.json(statuses);
   });
 
-  // --- Entities ---
-  app.get("/api/entities", async (_req, res) => {
+  // ── Entities ───────────────────────────────────────────────────────────────
+  app.get("/api/entities", requireAuth, async (_req, res) => {
     const ents = await storage.getEntities();
     const mappings = await storage.getMappings();
     const result = ents.map(e => ({
@@ -123,7 +224,7 @@ export async function registerRoutes(
     res.json(result);
   });
 
-  app.post("/api/entities", async (req, res) => {
+  app.post("/api/entities", requireAuth, async (req, res) => {
     const parsed = insertEntitySchema.safeParse(req.body);
     if (!parsed.success) {
       return res.status(400).json({ error: parsed.error.message });
@@ -137,13 +238,13 @@ export async function registerRoutes(
     res.json({ ...entity, mappings: allMappings.map(m => m.pattern) });
   });
 
-  app.delete("/api/entities/:id", async (req, res) => {
+  app.delete("/api/entities/:id", requireAuth, async (req, res) => {
     await storage.deleteEntity(req.params.id);
     res.json({ ok: true });
   });
 
-  // --- Mappings ---
-  app.post("/api/mappings", async (req, res) => {
+  // ── Mappings ───────────────────────────────────
+  app.post("/api/mappings", requireAuth, async (req, res) => {
     const parsed = insertEmailMappingSchema.safeParse(req.body);
     if (!parsed.success) {
       return res.status(400).json({ error: parsed.error.message });
@@ -152,13 +253,13 @@ export async function registerRoutes(
     res.json(mapping);
   });
 
-  app.delete("/api/mappings/:id", async (req, res) => {
+  app.delete("/api/mappings/:id", requireAuth, async (req, res) => {
     await storage.deleteMapping(req.params.id);
     res.json({ ok: true });
   });
 
-  // --- Excel Import ---
-  app.post("/api/entities/import", upload.single("file"), async (req, res) => {
+  // ── Excel Import (admin) ──────────────────────────────
+  app.post("/api/entities/import", requireAdmin, upload.single("file"), async (req, res) => {
     try {
       const file = req.file;
       if (!file) {
@@ -211,7 +312,7 @@ export async function registerRoutes(
     }
   });
 
-  // --- Query Preview ---
+  // ── Query Preview ───────────────────────────────────────
   const querySchema = z.object({
     accountIds: z.array(z.string()),
     entityIds: z.array(z.string()),
@@ -221,7 +322,7 @@ export async function registerRoutes(
     includeInline: z.boolean().optional().default(true),
   });
 
-  app.post("/api/query/preview", async (req, res) => {
+  app.post("/api/query/preview", requireAuth, async (req, res) => {
     const parsed = querySchema.safeParse(req.body);
     if (!parsed.success) {
       return res.status(400).json({ error: parsed.error.message });
@@ -238,8 +339,18 @@ export async function registerRoutes(
     res.json({ query });
   });
 
-  // --- Search Execution (across multiple accounts) ---
-  app.post("/api/query/run", async (req, res) => {
+  // ── Search Execution ──────────────────────────────────────────────────────
+  // requireMailboxAccess verifies that the logged-in user is allowed to search
+  // each requested account. The mapping is accountIndex → GMAIL_ACCOUNT_n_EMAIL.
+  app.post(
+    "/api/query/run",
+    requireAuth,
+    requireMailboxAccess((req) =>
+      (req.body?.accountIds || []).map((id: string) =>
+        getMailboxEmailForAccount(parseInt(id))
+      )
+    ),
+    async (req, res) => {
     const parsed = querySchema.safeParse(req.body);
     if (!parsed.success) {
       return res.status(400).json({ error: parsed.error.message });
@@ -318,8 +429,16 @@ export async function registerRoutes(
     }
   });
 
-  // --- Attachment Download ---
-  app.get("/api/attachments/:accountIndex/:messageId/:attachmentId", async (req, res) => {
+  // ── Attachment Download ────────────────────────────────────────────────────
+  // Per-request mailbox check: ensures the user can access the mailbox that
+  // owns this attachment. accountIndex is extracted from the URL parameter.
+  app.get(
+    "/api/attachments/:accountIndex/:messageId/:attachmentId",
+    requireAuth,
+    requireMailboxAccess((req) => [
+      getMailboxEmailForAccount(parseInt(req.params.accountIndex)),
+    ]),
+    async (req, res) => {
     try {
       const { accountIndex, messageId, attachmentId } = req.params;
       const filename = (req.query.filename as string || "attachment").replace(/[\r\n]/g, '');
@@ -354,7 +473,10 @@ export async function registerRoutes(
     })),
   });
 
-  app.post("/api/download/bundle", async (req, res) => {
+  // ── Bundle Download ────────────────────────────────────────────────────────
+  // Inline mailbox check: the items array has mixed accountIndexes, so we
+  // collect all unique account emails and enforce the grant for each.
+  app.post("/api/download/bundle", requireAuth, async (req, res) => {
     const parsed = bundleSchema.safeParse(req.body);
     if (!parsed.success) {
       return res.status(400).json({ error: parsed.error.message });
@@ -363,6 +485,21 @@ export async function registerRoutes(
     const { items } = parsed.data;
     if (items.length === 0) {
       return res.status(400).json({ error: "No items to download" });
+    }
+
+    // Mailbox RBAC: check all accounts referenced in the bundle before starting.
+    const user = getSessionUser(req)!;
+    const uniqueIndexes = Array.from(new Set(items.map(i => i.accountIndex)));
+    for (const idx of uniqueIndexes) {
+      const mailboxEmail = getMailboxEmailForAccount(idx);
+      if (!canAccessMailbox(user.email, mailboxEmail)) {
+        process.stdout.write(
+          `[MAILBOX-DENIED] user=${user.email} mailbox=${mailboxEmail} path=${req.path} (bundle)\n`
+        );
+        return res.status(403).json({
+          error: `Access denied: you are not authorized to access mailbox ${mailboxEmail || `account ${idx}`}`,
+        });
+      }
     }
 
     try {

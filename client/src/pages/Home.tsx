@@ -1,10 +1,10 @@
-import { useState, useRef } from "react";
+import { useState, useRef, useEffect } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import {
   Search, Mail, Building2, Calendar, FileText, Download, Settings2,
   Paperclip, CheckSquare, Image as ImageIcon, ChevronDown, ChevronRight,
   Plus, Trash2, Upload, Loader2, Eye, KeyRound, CheckCircle2, AlertCircle,
-  FileBarChart, Archive
+  FileBarChart, Archive, LogOut, ShieldCheck
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -18,6 +18,22 @@ import { Switch } from "@/components/ui/switch";
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle, DialogTrigger } from "@/components/ui/dialog";
 import { useToast } from "@/hooks/use-toast";
 import { api } from "@/lib/api";
+
+// ── Google Identity Services type declaration ───────────────────────────────
+// GIS is loaded via a <script> tag in index.html. We declare minimal types.
+declare global {
+  interface Window {
+    google?: {
+      accounts: {
+        id: {
+          initialize: (config: { client_id: string; callback: (resp: { credential: string }) => void }) => void;
+          renderButton: (parent: HTMLElement, options: object) => void;
+          prompt: () => void;
+        };
+      };
+    };
+  }
+}
 
 function formatBytes(bytes: number) {
   if (bytes < 1024) return `${bytes} B`;
@@ -81,6 +97,60 @@ export default function Home() {
   const qc = useQueryClient();
   const fileInputRef = useRef<HTMLInputElement>(null);
   const credFileInputRef = useRef<HTMLInputElement>(null);
+  const googleButtonRef = useRef<HTMLDivElement>(null);
+
+  // ── Session ────────────────────────────────────────────────────────────────
+  // Fetch the current session user on load. A 401 means not logged in.
+  const {
+    data: sessionUser,
+    isLoading: sessionLoading,
+    refetch: refetchSession,
+  } = useQuery({
+    queryKey: ["/api/auth/me"],
+    queryFn: api.getMe,
+    retry: false,
+    // Don't throw on 401 — we handle it as "not logged in"
+  });
+
+  // ── Google Sign-In initialization ──────────────────────────────────────────
+  // Initialize GIS when the login screen is visible.
+  useEffect(() => {
+    if (sessionUser || sessionLoading) return; // Already logged in or loading
+    const clientId = import.meta.env.VITE_GOOGLE_CLIENT_ID as string;
+    if (!clientId || !window.google?.accounts?.id) return;
+
+    window.google.accounts.id.initialize({
+      client_id: clientId,
+      callback: async (response) => {
+        try {
+          const user = await api.signInWithGoogle(response.credential);
+          await refetchSession();
+          toast({ title: `Welcome, ${user.name}` });
+        } catch (err: any) {
+          toast({ title: "Sign-in failed", description: err.message, variant: "destructive" });
+        }
+      },
+    });
+
+    if (googleButtonRef.current) {
+      window.google.accounts.id.renderButton(googleButtonRef.current, {
+        theme: "outline",
+        size: "large",
+        text: "signin_with",
+        width: 280,
+      });
+    }
+  }, [sessionUser, sessionLoading]);
+
+  const handleLogout = async () => {
+    try {
+      await api.logout();
+      qc.clear();
+      await refetchSession();
+    } catch {
+      // Ignore errors — the session will expire anyway
+    }
+  };
 
   const [selectedAccounts, setSelectedAccounts] = useState<string[]>([]);
   const [selectedEntities, setSelectedEntities] = useState<string[]>([]);
@@ -399,6 +469,37 @@ export default function Home() {
 
   const authorizedAccounts = accounts.filter((a: any) => a.authorized);
   const { messages: selectedMsgCount, attachments: selectedAttCount } = getSelectedCount();
+  const isAdmin = sessionUser?.isAdmin === true;
+
+  // ── Auth gate ──────────────────────────────────────────────────────────────
+  if (sessionLoading) {
+    return (
+      <div className="flex h-screen items-center justify-center bg-background">
+        <Loader2 className="h-8 w-8 animate-spin text-muted-foreground" />
+      </div>
+    );
+  }
+
+  if (!sessionUser) {
+    return (
+      <div className="flex h-screen items-center justify-center bg-background">
+        <div className="flex flex-col items-center gap-6 p-8 max-w-sm w-full">
+          <div className="flex items-center gap-2 text-primary font-semibold text-2xl">
+            <Search className="h-6 w-6" />
+            OmniSearch Mail
+          </div>
+          <p className="text-sm text-muted-foreground text-center">
+            Sign in with your <strong>@thegbexchange.com</strong> Google Workspace account to continue.
+          </p>
+          {/* GIS renders the Google button into this div */}
+          <div ref={googleButtonRef} />
+          <p className="text-xs text-muted-foreground text-center mt-2">
+            Access is restricted to authorised @thegbexchange.com users only.
+          </p>
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div className="flex h-screen w-full bg-background overflow-hidden font-sans">
@@ -411,6 +512,18 @@ export default function Home() {
             OmniSearch Mail
           </div>
           <p className="text-xs text-muted-foreground mt-1">Cross-account smart queries</p>
+          {/* Logged-in user info + logout */}
+          <div className="flex items-center justify-between mt-2 pt-2 border-t">
+            <div className="flex items-center gap-1">
+              {isAdmin && <ShieldCheck className="h-3 w-3 text-primary" aria-label="Admin" />}
+              <span className="text-xs text-muted-foreground truncate max-w-[160px]" title={sessionUser.email}>
+                {sessionUser.email}
+              </span>
+            </div>
+            <Button variant="ghost" size="icon" className="h-6 w-6 shrink-0" title="Sign out" onClick={handleLogout}>
+              <LogOut className="h-3.5 w-3.5" />
+            </Button>
+          </div>
         </div>
 
         <ScrollArea className="flex-1">
@@ -426,17 +539,22 @@ export default function Home() {
                   <Badge variant="secondary" className="text-xs">
                     {selectedAccounts.length}/{authorizedAccounts.length} selected
                   </Badge>
-                  <Button
-                    variant="ghost"
-                    size="icon"
-                    className="h-6 w-6"
-                    title="Upload credentials JSON"
-                    onClick={() => credFileInputRef.current?.click()}
-                    disabled={isUploadingCred}
-                  >
-                    {isUploadingCred ? <Loader2 className="h-3 w-3 animate-spin" /> : <Plus className="h-3 w-3" />}
-                  </Button>
-                  <input ref={credFileInputRef} type="file" accept=".json,application/json" className="hidden" onChange={handleCredUpload} />
+                  {/* Credential upload is admin-only — pre-provisioned accounts are set via env vars */}
+                  {isAdmin && (
+                    <>
+                      <Button
+                        variant="ghost"
+                        size="icon"
+                        className="h-6 w-6"
+                        title="Upload credentials JSON (admin only)"
+                        onClick={() => credFileInputRef.current?.click()}
+                        disabled={isUploadingCred}
+                      >
+                        {isUploadingCred ? <Loader2 className="h-3 w-3 animate-spin" /> : <Plus className="h-3 w-3" />}
+                      </Button>
+                      <input ref={credFileInputRef} type="file" accept=".json,application/json" className="hidden" onChange={handleCredUpload} />
+                    </>
+                  )}
                 </div>
               </div>
               <div className="space-y-2">
@@ -446,17 +564,19 @@ export default function Home() {
                   </div>
                 ) : accounts.length === 0 ? (
                   <div className="text-center py-3 space-y-2">
-                    <p className="text-xs text-muted-foreground">No accounts loaded.</p>
-                    <Button
-                      variant="outline"
-                      size="sm"
-                      className="h-7 text-xs gap-1.5"
-                      onClick={() => credFileInputRef.current?.click()}
-                      disabled={isUploadingCred}
-                    >
-                      {isUploadingCred ? <Loader2 className="h-3 w-3 animate-spin" /> : <Upload className="h-3 w-3" />}
-                      Upload credentials JSON
-                    </Button>
+                    <p className="text-xs text-muted-foreground">No accounts available.</p>
+                    {isAdmin && (
+                      <Button
+                        variant="outline"
+                        size="sm"
+                        className="h-7 text-xs gap-1.5"
+                        onClick={() => credFileInputRef.current?.click()}
+                        disabled={isUploadingCred}
+                      >
+                        {isUploadingCred ? <Loader2 className="h-3 w-3 animate-spin" /> : <Upload className="h-3 w-3" />}
+                        Upload credentials JSON
+                      </Button>
+                    )}
                   </div>
                 ) : (
                   accounts.map((acc: any) => (
@@ -483,16 +603,20 @@ export default function Home() {
                         </div>
                         <p className="text-xs text-muted-foreground truncate">{acc.email}</p>
                         {!acc.authorized && (
-                          <Button
-                            variant="outline"
-                            size="sm"
-                            className="h-7 text-xs mt-1 gap-1.5"
-                            onClick={() => handleAuthorize(acc.index)}
-                            data-testid={`button-authorize-${acc.id}`}
-                          >
-                            <KeyRound className="h-3 w-3" />
-                            Authorize Access
-                          </Button>
+                          isAdmin ? (
+                            <Button
+                              variant="outline"
+                              size="sm"
+                              className="h-7 text-xs mt-1 gap-1.5"
+                              onClick={() => handleAuthorize(acc.index)}
+                              data-testid={`button-authorize-${acc.id}`}
+                            >
+                              <KeyRound className="h-3 w-3" />
+                              Authorize Access
+                            </Button>
+                          ) : (
+                            <p className="text-xs text-amber-600 mt-1">Not yet authorized – contact admin</p>
+                          )
                         )}
                       </div>
                     </div>

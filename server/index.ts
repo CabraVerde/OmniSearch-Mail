@@ -1,10 +1,47 @@
 import express, { type Request, Response, NextFunction } from "express";
+import session from "express-session";
+import MemoryStore from "memorystore";
 import { registerRoutes } from "./routes";
 import { serveStatic } from "./static";
 import { createServer } from "http";
 
+// ── Fail fast if SESSION_SECRET is not set ───────────────────────────────────
+if (!process.env.SESSION_SECRET) {
+  console.error("[FATAL] SESSION_SECRET environment variable is required.");
+  process.exit(1);
+}
+
 const app = express();
 const httpServer = createServer(app);
+
+// ── Proxy trust ───────────────────────────────────────────────────────────────
+// Set TRUST_PROXY=1 ONLY when running behind a known trusted reverse proxy.
+// Without a proxy, leave TRUST_PROXY unset to prevent X-Forwarded-For spoofing.
+// See server/middleware/adminGuard.ts for full explanation.
+if (process.env.TRUST_PROXY === "1") {
+  app.set("trust proxy", 1);
+}
+
+// ── Session store (in-memory, no DB required) ─────────────────────────────────
+// memorystore prunes expired sessions automatically to prevent memory leaks.
+// Sessions are ephemeral — users re-authenticate after server restart.
+const MemStore = MemoryStore(session);
+const SESSION_MAX_AGE = parseInt(process.env.SESSION_MAX_AGE_MS || "28800000", 10); // default 8 h
+
+app.use(
+  session({
+    secret: process.env.SESSION_SECRET,
+    resave: false,
+    saveUninitialized: false,
+    cookie: {
+      httpOnly: true,   // JS cannot read the cookie
+      secure: process.env.NODE_ENV === "production", // HTTPS only in prod
+      sameSite: "lax",  // CSRF mitigation for same-origin navigation
+      maxAge: SESSION_MAX_AGE,
+    },
+    store: new MemStore({ checkPeriod: SESSION_MAX_AGE }),
+  })
+);
 
 declare module "http" {
   interface IncomingMessage {
