@@ -51,33 +51,41 @@ Each account uses separate OAuth2 credentials:
 
 ## Download System
 
-Each email is saved as a unified record in two formats, plus all attachments as separate files:
+Each selected email produces one COMBINED pair **per attachment**, plus the raw attachment file:
 
-1. **Combined PDF** — Single multi-page PDF per email:
-   - Page 1: Metadata (Subject, From, To, CC, Date, Entity) + attachment listing with preview indicators
-   - Page 2+: Email body text on its own page
-   - Additional pages: Image attachment previews (PNG, JPG, GIF embedded as pages)
-   - Additional pages: PDF attachment previews (first page copied via pdf-lib with caption)
-   - Non-embeddable attachments (.xlsx, .docx, .zip) listed on metadata page only
+1. **Raw attachment** — saved as `YYYY-MM-DD_SubjectSlug_AttachmentSlug.ext`
+   - Generic filenames (`inline_1.pdf`, `attachment.pdf`, etc.) are replaced with subject + extension
+   - Subject slug capped at 30 chars, attachment slug capped at 30 chars
 
-2. **JSON Record** — Structured data file per email:
-   - All metadata fields (messageId, subject, from, to, cc, date, dateISO, entity)
-   - Full body text
-   - Attachment listing with filename, mimeType, size, previewInCombinedPdf flag
+2. **COMBINED PDF** — `YYYY-MM-DD_SubjectSlug_AttachmentSlug_COMBINED.pdf`:
+   - Page 1: Metadata (Subject, From, To, CC, Date, Entity) + full attachment listing; the attachment for this COMBINED file is marked `→ [this file]`, others show `[separate file]`
+   - Page 2+: Full email body text
+   - Additional page: Image preview (PNG/JPG/GIF/BMP/WEBP embedded full-page) if this attachment is an image
+   - Additional page: First page of PDF attachment copied via `pdf-lib` with caption bar if this attachment is a PDF
+   - Non-previewable types (.xlsx, .docx, .zip) — no preview page appended
 
-3. **Separate Attachments** — ALL attachments saved as individual files (regardless of type)
+3. **COMBINED JSON** — `YYYY-MM-DD_SubjectSlug_AttachmentSlug_COMBINED.json`:
+   - All metadata fields: `messageId`, `subject`, `from`, `to`, `cc`, `date`, `dateISO`, `entity`
+   - `linkedAttachmentFile` — filename of the raw attachment this record corresponds to
+   - `bodyText` — full plain-text body (stripped from HTML if needed)
+   - `attachments` array — all attachments on the email with `filename`, `mimeType`, `size`, `previewInCombinedPdf`
 
-ZIP structure (flat, no subfolders per email):
+Emails with **no attachments** produce a single `YYYY-MM-DD_SubjectSlug_COMBINED.pdf/.json` (metadata + body only).
+
+Duplicate filenames within the same entity folder get a `_2`, `_3` counter suffix on all three files to keep the triplet in sync.
+
+ZIP structure:
 ```
 Entity_Name/
-  YYYY-MM-DD_Subject_Slug_combined.pdf    (metadata + body + attachment previews)
-  YYYY-MM-DD_Subject_Slug_combined.json   (structured data record)
-  YYYY-MM-DD_Attachment_Name.ext          (actual attachment files)
+  YYYY-MM-DD_Subject_Invoice.pdf
+  YYYY-MM-DD_Subject_Invoice_COMBINED.pdf
+  YYYY-MM-DD_Subject_Invoice_COMBINED.json
+  YYYY-MM-DD_Subject_CreditNote.pdf
+  YYYY-MM-DD_Subject_CreditNote_COMBINED.pdf
+  YYYY-MM-DD_Subject_CreditNote_COMBINED.json
 ```
 
-Smart filename logic: generic filenames (inline_1.pdf, attachment.pdf, etc.) are replaced with the email subject + original extension.
-
-Dependencies: `pdfkit` (generates metadata+body pages), `pdf-lib` (merges PDF attachment previews), `archiver` (ZIP creation).
+Dependencies: `pdfkit` (metadata + body pages + image embed), `pdf-lib` (PDF first-page copy), `archiver` (ZIP creation).
 
 ## Entity Mapping Excel Format
 
