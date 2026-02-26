@@ -4,6 +4,10 @@ import MemoryStore from "memorystore";
 import { registerRoutes } from "./routes";
 import { serveStatic } from "./static";
 import { createServer } from "http";
+import { config as loadDotenv } from "dotenv";
+
+// ── Load .env file before anything else reads process.env ─────────────────────
+loadDotenv(); // reads .env from cwd; silently skips if file not found in production
 
 // ── Fail fast if SESSION_SECRET is not set ───────────────────────────────────
 if (!process.env.SESSION_SECRET) {

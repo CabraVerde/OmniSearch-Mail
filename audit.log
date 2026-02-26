@@ -1,3 +1,11 @@
 {"ts":"2026-02-26T13:01:57.153Z","type":"admin_denied","email":"steve@thegbexchange.com","ip":"127.0.0.1","method":"POST","path":"/api/credentials/upload","reason":"ip_not_in_vpn_allowlist"}
 {"ts":"2026-02-26T13:02:17.523Z","type":"admin_denied","email":null,"ip":"127.0.0.1","method":"POST","path":"/api/entities/import","reason":"not_authenticated"}
 {"ts":"2026-02-26T13:03:44.797Z","type":"admin_denied","email":null,"ip":"127.0.0.1","method":"POST","path":"/api/credentials/upload","reason":"not_authenticated"}
+{"ts":"2026-02-26T13:12:48.438Z","type":"admin_denied","email":null,"ip":"127.0.0.1","method":"POST","path":"/api/entities/import","reason":"not_authenticated"}
+{"ts":"2026-02-26T13:52:34.284Z","type":"admin_denied","email":null,"ip":"127.0.0.1","method":"POST","path":"/api/entities/import","reason":"not_authenticated"}
+{"ts":"2026-02-26T15:28:44.123Z","type":"admin_access","email":"steve@thegbexchange.com","ip":"127.0.0.1","method":"POST","path":"/api/credentials/upload"}
+{"ts":"2026-02-26T15:28:56.086Z","type":"admin_access","email":"steve@thegbexchange.com","ip":"127.0.0.1","method":"GET","path":"/api/auth/authorize/1"}
+{"ts":"2026-02-26T15:29:15.008Z","type":"admin_access","email":"steve@thegbexchange.com","ip":"127.0.0.1","method":"POST","path":"/api/auth/exchange-code"}
+{"ts":"2026-02-26T15:29:18.888Z","type":"admin_access","email":"steve@thegbexchange.com","ip":"127.0.0.1","method":"GET","path":"/api/auth/authorize/2"}
+{"ts":"2026-02-26T15:29:44.268Z","type":"admin_access","email":"steve@thegbexchange.com","ip":"127.0.0.1","method":"POST","path":"/api/auth/exchange-code"}
+{"ts":"2026-02-26T15:30:04.365Z","type":"admin_access","email":"steve@thegbexchange.com","ip":"127.0.0.1","method":"POST","path":"/api/entities/import"}

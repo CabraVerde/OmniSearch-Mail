@@ -27,7 +27,12 @@ declare module "express-session" {
 
 // The Google OAuth client used ONLY for ID token verification (no credentials stored).
 // GOOGLE_CLIENT_ID must match the OAuth client configured in Google Cloud Console.
-const googleClient = new OAuth2Client(process.env.GOOGLE_CLIENT_ID);
+// Lazily initialized on first use so process.env is populated from .env before this runs.
+let googleClient: OAuth2Client | null = null;
+function getGoogleClient(): OAuth2Client {
+  if (!googleClient) googleClient = new OAuth2Client(process.env.GOOGLE_CLIENT_ID);
+  return googleClient;
+}
 
 const ALLOWED_DOMAIN = "thegbexchange.com";
 
@@ -40,7 +45,7 @@ const ALLOWED_DOMAIN = "thegbexchange.com";
 export async function verifyGoogleIdToken(
   idToken: string
 ): Promise<{ email: string; name: string }> {
-  const ticket = await googleClient.verifyIdToken({
+  const ticket = await getGoogleClient().verifyIdToken({
     idToken,
     audience: process.env.GOOGLE_CLIENT_ID,
   });
