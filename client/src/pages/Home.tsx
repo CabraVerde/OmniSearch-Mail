@@ -635,14 +635,18 @@ export default function Home() {
                 </h3>
                 <div className="flex items-center gap-1">
                   <Badge variant="secondary" className="text-xs">{selectedEntities.length}/{entitiesData.length}</Badge>
-                  <Button variant="ghost" size="icon" className="h-6 w-6" onClick={() => fileInputRef.current?.click()} data-testid="button-import-excel">
-                    <Upload className="h-3 w-3" />
-                  </Button>
-                  <input ref={fileInputRef} type="file" accept=".xlsx,.xls,.csv" className="hidden" onChange={e => {
-                    const file = e.target.files?.[0];
-                    if (file) importMut.mutate(file);
-                    e.target.value = '';
-                  }} />
+                  {isAdmin && (
+                    <>
+                      <Button variant="ghost" size="icon" className="h-6 w-6" onClick={() => fileInputRef.current?.click()} data-testid="button-import-excel">
+                        <Upload className="h-3 w-3" />
+                      </Button>
+                      <input ref={fileInputRef} type="file" accept=".xlsx,.xls,.csv" className="hidden" onChange={e => {
+                        const file = e.target.files?.[0];
+                        if (file) importMut.mutate(file);
+                        e.target.value = '';
+                      }} />
+                    </>
+                  )}
                   <Dialog open={addEntityOpen} onOpenChange={setAddEntityOpen}>
                     <DialogTrigger asChild>
                       <Button variant="ghost" size="icon" className="h-6 w-6" data-testid="button-add-entity">

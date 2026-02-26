@@ -177,7 +177,7 @@ export async function registerRoutes(
   // ── OAuth Authorization Flow ───────────────────────────────────────────────
   // Admin-only: account OAuth setup is a one-time admin operation.
   app.get("/api/auth/authorize/:accountIndex", requireAdmin, (req, res) => {
-    const accountIndex = parseInt(req.params.accountIndex);
+    const accountIndex = parseInt(req.params.accountIndex as string);
     const url = getAuthUrl(accountIndex);
     if (!url) {
       return res.status(400).json({ error: `No credentials configured for account ${accountIndex}` });
@@ -239,7 +239,7 @@ export async function registerRoutes(
   });
 
   app.delete("/api/entities/:id", requireAuth, async (req, res) => {
-    await storage.deleteEntity(req.params.id);
+    await storage.deleteEntity(req.params.id as string);
     res.json({ ok: true });
   });
 
@@ -254,7 +254,7 @@ export async function registerRoutes(
   });
 
   app.delete("/api/mappings/:id", requireAuth, async (req, res) => {
-    await storage.deleteMapping(req.params.id);
+    await storage.deleteMapping(req.params.id as string);
     res.json({ ok: true });
   });
 
@@ -436,11 +436,11 @@ export async function registerRoutes(
     "/api/attachments/:accountIndex/:messageId/:attachmentId",
     requireAuth,
     requireMailboxAccess((req) => [
-      getMailboxEmailForAccount(parseInt(req.params.accountIndex)),
+      getMailboxEmailForAccount(parseInt(req.params.accountIndex as string)),
     ]),
     async (req, res) => {
     try {
-      const { accountIndex, messageId, attachmentId } = req.params;
+      const { accountIndex, messageId, attachmentId } = req.params as Record<string, string>;
       const filename = (req.query.filename as string || "attachment").replace(/[\r\n]/g, '');
       const buffer = await downloadAttachment(messageId, attachmentId, parseInt(accountIndex));
       res.setHeader("Content-Disposition", `attachment; filename="${filename}"`);
@@ -511,7 +511,7 @@ export async function registerRoutes(
 
       const fileCounters: Record<string, number> = {};
 
-      function dedupeKey(key: string, base: string): string {
+      const dedupeKey = (key: string, base: string): string => {
         if (fileCounters[key] !== undefined) {
           fileCounters[key]++;
           return `${base}_${fileCounters[key]}`;

@@ -1,0 +1,3 @@
+{"ts":"2026-02-26T13:01:57.153Z","type":"admin_denied","email":"steve@thegbexchange.com","ip":"127.0.0.1","method":"POST","path":"/api/credentials/upload","reason":"ip_not_in_vpn_allowlist"}
+{"ts":"2026-02-26T13:02:17.523Z","type":"admin_denied","email":null,"ip":"127.0.0.1","method":"POST","path":"/api/entities/import","reason":"not_authenticated"}
+{"ts":"2026-02-26T13:03:44.797Z","type":"admin_denied","email":null,"ip":"127.0.0.1","method":"POST","path":"/api/credentials/upload","reason":"not_authenticated"}

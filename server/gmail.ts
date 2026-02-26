@@ -216,7 +216,7 @@ export async function searchMessages(
       let bodyText = '';
       let bodyHtml = '';
 
-      function extractParts(parts: any[], parentIsRelated = false) {
+      const extractParts = (parts: any[], parentIsRelated = false): void => {
         for (const part of parts) {
           if (part.parts) {
             const isRelated = part.mimeType === 'multipart/related';
